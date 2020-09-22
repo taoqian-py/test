@@ -1,0 +1,241 @@
+{% extends 'base_no_cart.html' %}
+{% load staticfiles %}
+{% block title %}天天生鲜-购物车{% endblock title %}
+{% block page_title %}购物车{% endblock page_title %}
+{% block body %}
+	<div class="total_count">全部商品<em>{{ total_count }}</em>件</div>
+	<ul class="cart_list_th clearfix">
+		<li class="col01">商品名称</li>
+		<li class="col02">商品单位</li>
+		<li class="col03">商品价格</li>
+		<li class="col04">数量</li>
+		<li class="col05">小计</li>
+		<li class="col06">操作</li>
+	</ul>
+    <form method="post" action="{% url 'order:place' %}">
+    {% for sku in skus %}
+	<ul class="cart_list_td clearfix">
+		<li class="col01"><input type="checkbox" name="sku_ids" value="{{ sku.id }}" checked></li>
+		<li class="col02"><img src="{{ sku.image.url }}"></li>
+		<li class="col03">{{ sku.name }}<br><em>{{ sku.price }}元/{{ sku.unite }}</em></li>
+		<li class="col04">{{ sku.unite }}</li>
+		<li class="col05">{{ sku.price }}元</li>
+		<li class="col06">
+			<div class="num_add">
+				<a href="javascript:;" class="add fl">+</a>
+				<input type="text" sku_id="{{ sku.id }}" class="num_show fl" value="{{ sku.count }}">
+				<a href="javascript:;" class="minus fl">-</a>
+			</div>
+		</li>
+		<li class="col07">{{ sku.amount }}元</li>
+		<li class="col08"><a href="javascript:;">删除</a></li>
+	</ul>
+    {% endfor %}
+
+
+	<ul class="settlements">
+        {% csrf_token %}
+		<li class="col01"><input type="checkbox" name="" checked=""></li>
+		<li class="col02">全选</li>
+		<li class="col03">合计(不含运费)：<span>¥</span><em>{{ total_price }}</em><br>共计<b>{{ total_count }}</b>件商品</li>
+		<li class="col04"><input type="submit" value="去结算"></li>
+	</ul>
+    </form>
+{% endblock body %}
+{% block bottomfiles %}
+    <script src="{% static 'js/jquery-1.12.4.min.js' %}"></script>
+    <script>
+
+        function update_page_info() {
+            total_count = 0
+            total_price = 0
+            $('.cart_list_td').find(':checked').parents('ul').each(function () {
+                price = $(this).children('.col07').text()
+                count = $(this).find('.num_show').val()
+                price = parseFloat(price)
+                count = parseInt(count)
+
+                total_price += price
+                total_count += count
+            })
+            $('.settlements').find('em').text(total_price.toFixed(2)+'元')
+            $('.settlements').find('b').text(total_count)
+
+        }
+
+        //计算商品的小记
+        function update_goods_amount(sku_ul){
+            price = sku_ul.children('.col05').text()
+            count = sku_ul.find('.num_show').val()
+            amount = parseFloat(price)*parseInt(count)
+
+            sku_ul.children('.col07').text(amount.toFixed(2)+'元')
+
+        }
+
+        $('.settlements').find(':checkbox').change(function () {
+            is_checked = $(this).prop('checked')
+
+            $('.cart_list_td').find(':checkbox').each(function () {
+                $(this).prop('checked', is_checked)
+            })
+            update_page_info()
+
+        })
+
+        // 当点击list时，全选框的状态发生改变
+        $('.cart_list_td').find(':checkbox').change(function () {
+
+            all_len = $('.cart_list_td').length
+            checked_len = $('.cart_list_td').find(':checked').length
+            is_checked = true
+            if(checked_len<all_len){
+                is_checked = false
+            }
+            $('.settlements').find(':checkbox').prop('checked', is_checked)
+            update_page_info()
+        })
+
+        // 当购物车增加或者是减少时
+        total = 0
+        error_update = false
+        function update_remote_cart_info(sku_id, count){
+
+            csvf = $('input[name="csrfmiddlewaretoken"]').val()
+
+            params = {'count':count, 'sku_id':sku_id, 'csrfmiddlewaretoken':csvf}
+            $.ajaxSettings.async = false
+            $.post('/cart/update', params, function (data) {
+                if(data.res==5){
+
+                    error_update = false
+                    total = data.total_count
+
+                }
+                else{
+                    error_update = true
+                    alert(data.errmsg)
+                }
+            })
+            $.ajaxSettings.async = true
+
+        }
+
+
+        // 购物车商品数量的增加
+        $('.add').click(function () {
+            count = $(this).next().val()
+            sku_id = $(this).next().attr('sku_id')
+
+            count = parseInt(count)+1
+            update_remote_cart_info(sku_id, count)
+            if(error_update==false){
+
+                $(this).next().val(count)
+
+                update_goods_amount($(this).parents('ul'))
+
+                is_checked = $(this).parents('ul').find(':checkbox').prop('checked')
+
+                if (is_checked){
+                    update_page_info()
+                }
+                $('.total_count').find('em').text(total)
+            }
+
+
+        })
+
+        // 购物车商品数量的减少
+        $('.minus').click(function () {
+            count = $(this).prev().val()
+            sku_id = $(this).prev().attr('sku_id')
+
+            count = parseInt(count)-1
+
+            if(count<=0){
+                count=1
+            }
+            update_remote_cart_info(sku_id, count)
+
+            if(error_update==false){
+
+                $(this).prev().val(count)
+                update_goods_amount($(this).parents('ul'))
+                is_checked = $(this).parents('ul').find(':checkbox').prop('checked')
+                if(is_checked){
+                    update_page_info()
+                }
+
+            }
+            $('.total_count').find('em').text(total)
+
+        })
+
+        prev_count = 0
+        // 记录用户输入之前商品的数量
+        $('.num_show').focus(function () {
+            prev_count = $(this).val()
+        })
+
+        // 购物车商品手动输入
+        $('.num_show').blur(function () {
+            count = $(this).val()
+            sku_id = $(this).attr('sku_id')
+
+            if(isNaN(count)||count.trim().length==0||count<=0){
+                $(this).val(prev_count)
+                return
+            }
+
+            count = parseInt(count)
+            update_remote_cart_info(sku_id, count)
+
+            if(error_update==false){
+
+                $(this).val(count)
+                update_goods_amount($(this).parents('ul'))
+                is_checked = $(this).parents('ul').find(':checkbox').prop('checked')
+                if(is_checked){
+                    update_page_info()
+                }
+
+                $('.total_count').children('em').text(total)
+            }
+
+            else{
+                $(this).val(prev_count)
+            }
+
+        })
+
+        $('.cart_list_td').children('.col08').children('a').click(function () {
+
+            sku_id = $(this).parents('ul').find('.num_show').attr('sku_id')
+
+            csvf = $('input[name="csrfmiddlewaretoken"]').val()
+
+            params = {'sku_id':sku_id, 'csrfmiddlewaretoken':csvf}
+            sku_ul = $(this).parents('ul')
+            $.post('/cart/delete', params, function (data) {
+
+                if(data.res==3){
+                    sku_ul.remove()
+                    is_checked = sku_ul.find(':checkbox').prop('checked')
+                    if(is_checked){
+                        update_page_info()
+                    }
+                    $('.total_count').children('em').text(data.total_count)
+                }
+                else{
+                    alert(data.errmsg)
+                }
+
+            })
+
+        })
+
+
+
+    </script>
+{% endblock bottomfiles %}
