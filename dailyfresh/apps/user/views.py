@@ -3,9 +3,12 @@ from django.views.generic import View
 from django.conf import settings
 from django.core.urlresolvers import reverse
 from django.http import HttpResponse
-from django.contrib.auth import authenticate,login
+from django.contrib.auth import authenticate,login,logout
+from django_redis import get_redis_connection
+from utils.mixin import LoginRequiredMixin
 from celery_tasks.tasks import send_register_active_email
-from user.models import User
+from user.models import User,Address
+from goods.models import GoodsSKU
 from itsdangerous import TimedJSONWebSignatureSerializer as Serializer
 from itsdangerous import SignatureExpired
 import re
@@ -63,6 +66,7 @@ class RegisterView(View):
 
         return redirect(reverse('goods:index'))
 
+
 class ActiveView(View):
 
     def get(self,request,token):
@@ -96,43 +100,146 @@ class LoginView(View):
 
         return render(request,'login.html',{"username":username,"checked":checked})
 
-
-    def post(self,request):
-        """登陆页面"""
-        # 获取数据登陆
+    def post(self, request):
+        '''登录校验'''
+        # 接收数据
         username = request.POST.get('username')
         password = request.POST.get('pwd')
 
         # 校验数据
-        if not all([username,password]):
-            return render(request,'login.html',{'errmsg':'数据不完整，请输入用户名和密码'})
+        if not all([username, password]):
+            return render(request, 'login.html', {'errmsg':'数据不完整'})
 
-        # 业务处理
-        user = authenticate(username=username,password=password)
+        # 业务处理:登录校验
+        user = authenticate(username=username, password=password)
         if user is not None:
             # 用户名密码正确
             if user.is_active:
-                # 用户被激活
+                # 用户已激活
                 # 记录用户的登录状态
-                login(request,user)
-                # 要跳转到首页
-                response = redirect(reverse("goods:index"))
-                # 判断是否要记住用户名
+                login(request, user)
+
+                # 获取登录后所要跳转到的地址
+                # 默认跳转到首页
+                next_url = request.GET.get('next', reverse('goods:index'))
+
+                # 跳转到next_url
+                response = redirect(next_url) # HttpResponseRedirect
+
+                # 判断是否需要记住用户名
                 remember = request.POST.get('remember')
-                if remember is 'on':
-                    #要记住用户名
-                    response.set_cookie("username",username,max_age=7*24*3600)
+
+                if remember == 'on':
+                    # 记住用户名
+                    response.set_cookie('username', username, max_age=7*24*3600)
                 else:
-                    #不记住用户名
-                    response.delete_cookie("username",username)
+                    response.delete_cookie('username')
+
+                # 返回response
                 return response
             else:
-                # 账户没被激活
-                return render(request,"login.html",{"errmsg":'账户没被激活'})
+                # 用户未激活
+                return render(request, 'login.html', {'errmsg':'账户未激活'})
         else:
-            return render(request,"login.html",{"errmsg":'用户名和密码错误'})
+            # 用户名或密码错误
+            return render(request, 'login.html', {'errmsg':'用户名或密码错误'})
 
 
 
 
+class LogoutView(View):
+    def get(self,request):
+        # 退出登陆，清除登陆session信息
+        logout(request)
+        return redirect(reverse('goods:index'))
 
+
+class UserInfoView(LoginRequiredMixin, View):
+    """用户中心信息页面"""
+    def get(self,request):
+        # 显示
+        # 获取个人信息
+        user = request.user
+        address = Address.objects.get_default_address(user)
+
+        # 利用缓存使用到了redis
+        conn = get_redis_connection('default')
+
+        # 获取用户的历史浏览记录
+        history_key = "history_%d"%user.id
+
+        # 获取浏览过的sku——id
+        sku_ids = conn.lrange(history_key,0,4)
+
+        goods_list = []
+        # 从数据库中读取sku商品
+        for id in sku_ids:
+            goods = GoodsSKU.objects.get(id=id)
+            goods_list.append(goods)
+
+        # 组织前端模板数据
+        content = {
+            "page":"info",
+            "address":address,
+            "goods_list":goods_list
+        }
+
+        return render(request,'user_center_info.html',content)
+
+
+class UserOrderView(LoginRequiredMixin, View):
+    """用户中心订单页面"""
+    def get(self,request):
+
+        return render(request,'user_center_order.html',{"page":"order"})
+
+
+class AddressView(LoginRequiredMixin, View):
+
+    """用户中心地址页面"""
+    def get(self,request):
+        # 获取用户的信息
+        user = request.user
+        # 获取用户默认的收货地址
+        address = Address.objects.get_default_address(user)
+        # 组织上下文
+        content = {"page":"address","address":address}
+
+        return render(request,'user_center_site.html',content)
+
+
+    def post(self,request):
+        '''地址的添加'''
+        # 接收数据
+        reciver = request.POST.get("reciver")
+        addr = request.POST.get("addr")
+        zip_code = request.POST.get("zip_code")
+        phone = request.POST.get("phone")
+
+        # 校验数据完整性
+        if not all([reciver,addr,phone]):
+            return render(request, 'user_center_site.html', {'errmsg':'数据不完整'})
+
+        # 校验手机号
+        if not re.match(r"1[3578]{9}",phone):
+            return render(request, 'user_center_site.html', {'errmsg':'手机格式不正确'})
+
+        # 业务处理-添加默认地址
+        # 获取用户对象
+        user = request.user
+        address = Address.objects.get_default_address(user)
+
+        # 如果已经存在默认收货地址
+        if address:
+            is_default = True
+        else:
+            is_default= False
+
+        Address.objects.create(user=user,
+                               reciver=reciver,
+                               addr=addr,
+                               zip_code=zip_code,
+                               phone=phone,
+                               is_default=is_default)
+
+        return redirect(reverse("user:address"))
